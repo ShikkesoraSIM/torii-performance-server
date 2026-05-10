@@ -29,6 +29,26 @@ namespace PerformanceServer
         [JsonProperty("combo")] public int Combo { get; set; }
         [JsonProperty("statistics")] public Dictionary<HitResult, int> Statistics { get; set; } = new();
         [JsonProperty("beatmap_file")] public string? BeatmapFile { get; set; }
+
+        /// <summary>
+        /// Optional touchscreen play-style classification, sourced from the
+        /// <c>/touchscreen/classify</c> endpoint and persisted in the
+        /// <c>scores.td_play_style</c> column by g0v0-server.
+        /// </summary>
+        /// <remarks>
+        /// When this is <c>"tap"</c> AND the score carries a TD mod, the
+        /// controller silently strips the TD mod before invoking the pp
+        /// calculator. The effect is that genuine tap players get the same
+        /// pp they'd get on mouse/tablet — the FairTouchScreen outcome —
+        /// without needing a separate mod or a dedicated calculator
+        /// pathway. Any other value (drag / mixed / unknown / null) leaves
+        /// the mod list untouched and the TD penalty applies as before.
+        ///
+        /// The bypass is implemented here rather than inside the ruleset's
+        /// pp calculator so the decision stays server-side and out of the
+        /// client DLL.
+        /// </remarks>
+        [JsonProperty("td_play_style")] public string? TdPlayStyle { get; set; }
     }
 
     [ApiController]
@@ -61,6 +81,23 @@ namespace PerformanceServer
                 if (classicMod != null)
                     mods.Add(classicMod);
             }
+
+            // FairTouchScreen bypass: a TD-tagged score whose replay was
+            // classified as discrete-tap play gets the TD penalty removed.
+            // The mechanism is intentionally surgical — we strip the mod
+            // from the calculator's input rather than touching the
+            // ruleset's pp formulae, so the decision stays server-side and
+            // requires zero client changes.
+            //
+            // The classifier itself runs separately (POST /touchscreen/
+            // classify) and the verdict is persisted by g0v0-server in
+            // scores.td_play_style. The pp recalc passes that column
+            // through to us here as the td_play_style field.
+            //
+            // Conservative on every other value: drag / mixed / unknown /
+            // null all keep the TD mod and the existing penalty.
+            if (string.Equals(body.TdPlayStyle, "tap", StringComparison.OrdinalIgnoreCase))
+                mods.RemoveAll(m => m is ModTouchDevice);
 
             ScoreInfo scoreInfo = new()
             {
