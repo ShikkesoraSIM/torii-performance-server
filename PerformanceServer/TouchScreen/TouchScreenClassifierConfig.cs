@@ -97,49 +97,80 @@ namespace PerformanceServer.TouchScreen
         /// </summary>
         public const double VerdictMarginRequired = 0.20;
 
-        // ───── tap composite weights ─────
+        // ───── composite weights ─────
+        //
+        // Each composite's weights sum to 1.0. If you tune one, tune the
+        // others. The breakdown gives the midpoint-progress signal the
+        // plurality (≈50%) because it's the only position-based input
+        // and therefore the only one that survives all frame-rate and
+        // spacing edge cases. The velocity-bucket signals are the
+        // confirmation — they're cheap, fast, and correct on the common
+        // case where per-frame motion is well above the stationary
+        // floor.
+        //
+        // Physical intuition for the dominant weight: at the temporal
+        // midpoint of an inter-hit interval, a tap player's cursor is
+        // physically at the previous hit position (it's been held since
+        // contact ended). A drag player's cursor is physically half-way
+        // along the path to the next hit. Neither can fake the other —
+        // tap can't be at mid-path because lifting freezes the cursor,
+        // and drag can't be at the start because the finger has already
+        // moved. The signal is robust to frame poll rate, hit spacing,
+        // BPM, and replay file format.
 
         /// <summary>
-        /// Weight of the stationary-frame ratio in the Tap composite score.
-        /// Stationary is the primary tap signal — finger lifts → cursor
-        /// stops.
+        /// Weight of the stationary-frame ratio. Confirmation signal —
+        /// "yes, the cursor really was held all the way".
         /// </summary>
-        public const double TapWeightStationary = 0.55;
+        public const double TapWeightStationary = 0.20;
 
         /// <summary>
         /// Weight of the max-stillness fraction. Catches plays where the
-        /// cursor jitters slightly while held (not perfectly still) but a
-        /// long contiguous hold still dominates.
+        /// cursor jitters slightly while held but the longest contiguous
+        /// hold still dominates.
         /// </summary>
-        public const double TapWeightMaxStillness = 0.30;
+        public const double TapWeightMaxStillness = 0.10;
 
         /// <summary>
-        /// Weight of the jumping-frame ratio. Tap plays produce at least
-        /// a few one-frame jumps as the stylus replants between hits.
+        /// Weight of the jumping-frame ratio. Tap plays produce at
+        /// least a few one-frame jumps as the stylus replants.
         /// </summary>
-        public const double TapWeightJumping = 0.15;
-
-        // ───── drag composite weights ─────
+        public const double TapWeightJumping = 0.10;
 
         /// <summary>
-        /// Weight of the moving-frame ratio. The defining drag signal —
-        /// sustained motion frame after frame.
+        /// Weight of <c>(1 − midpoint_progress)</c>. THE primary tap
+        /// signal — cursor sitting at the previous hit position at
+        /// midpoint is the physically-unfakeable tap fingerprint.
+        /// See the composite-weights header comment for why this gets
+        /// the plurality.
         /// </summary>
-        public const double DragWeightMoving = 0.55;
+        public const double TapWeightLowMidpointProgress = 0.60;
+
+        /// <summary>
+        /// Weight of the moving-frame ratio. Confirmation signal — "yes,
+        /// the cursor really was in motion frame after frame".
+        /// </summary>
+        public const double DragWeightMoving = 0.20;
 
         /// <summary>
         /// Weight of the path-inflation excess (max 0.5 above 1.0). Drag
-        /// plays curve through the playfield instead of taking straight
-        /// lines.
+        /// plays curve through the playfield; a high inflation is a
+        /// drag-only signature.
         /// </summary>
-        public const double DragWeightPathInflation = 0.25;
+        public const double DragWeightPathInflation = 0.10;
 
         /// <summary>
-        /// Weight of (1 − stationary ratio). A drag player by definition
-        /// never holds still — the absence of stationary frames corroborates
-        /// the moving-ratio signal.
+        /// Weight of (1 − stationary ratio). Lightweight confirmation —
+        /// a true drag never holds still even briefly.
         /// </summary>
-        public const double DragWeightNotStationary = 0.20;
+        public const double DragWeightNotStationary = 0.10;
+
+        /// <summary>
+        /// Weight of <c>midpoint_progress</c>. THE primary drag signal,
+        /// mirror of <see cref="TapWeightLowMidpointProgress"/>. See the
+        /// composite-weights header comment.
+        /// </summary>
+        public const double DragWeightMidpointProgress = 0.60;
 
         /// <summary>
         /// Path inflation cap used by the drag composite. A 1.0 → 1.5

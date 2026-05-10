@@ -103,6 +103,17 @@ namespace PerformanceServer.TouchScreen
             public const string MaxStillnessFraction = "max_stillness_fraction";
 
             /// <summary>
+            /// Median (across intervals where the metric is meaningful) of
+            /// the cursor's progress along the prev-hit → next-hit path at
+            /// the temporal midpoint of the interval, in [0, 1]. Tap
+            /// players sit near 0 (cursor held at previous hit until the
+            /// last frame); drag players sit near 0.5 (cursor mid-path).
+            /// Position-based, so robust to frame rate where the per-frame
+            /// velocity bucketing degrades.
+            /// </summary>
+            public const string MidpointProgress = "midpoint_progress";
+
+            /// <summary>
             /// Number of inter-hit intervals that survived filtering and fed
             /// the medians above. Below 10 → low confidence; below 5 →
             /// Unknown verdict.

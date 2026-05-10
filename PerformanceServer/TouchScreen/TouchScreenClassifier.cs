@@ -153,25 +153,50 @@ namespace PerformanceServer.TouchScreen
             double pathInflation = median(perIntervalMetrics, m => m.PathInflation);
             double maxStillness = perIntervalMetrics.Sum(m => m.MaxStillnessFraction) / perIntervalMetrics.Count;
 
+            // Midpoint progress: only aggregate over intervals where the
+            // metric is meaningful (euclidean distance ≥ 1 px so the
+            // projection is defined). Stack intervals contribute the
+            // neutral 0.5 default but we don't want those biasing the
+            // median, so filter them out here. If literally every interval
+            // is a stack (rare; bm has only stacked notes), fall back to
+            // the neutral default.
+            var validMidpointIntervals = perIntervalMetrics
+                .Where(m => m.MidpointProgressValid)
+                .ToList();
+            double midpointProgress = validMidpointIntervals.Count > 0
+                ? median(validMidpointIntervals, m => m.MidpointProgress)
+                : 0.5;
+
             int totalFrames = perIntervalMetrics.Sum(m => m.FrameCount);
 
-            // Composite scores (each in [0, 1]).
+            // Composite scores (each in [0, 1]). Weights sum to 1.0 per
+            // composite — see TouchScreenClassifierConfig for the
+            // breakdown reasoning.
             double tapScore =
                 stationaryRatio * TouchScreenClassifierConfig.TapWeightStationary
                 + maxStillness * TouchScreenClassifierConfig.TapWeightMaxStillness
-                + Math.Min(jumpingRatio * 4.0, 1.0) * TouchScreenClassifierConfig.TapWeightJumping;
+                + Math.Min(jumpingRatio * 4.0, 1.0) * TouchScreenClassifierConfig.TapWeightJumping
+                + (1.0 - midpointProgress) * TouchScreenClassifierConfig.TapWeightLowMidpointProgress;
             // ^ jumping is rare in absolute terms (a few % is already strong
             //   signal); amplify by 4x before clamping to [0, 1] so it can
             //   contribute meaningfully to the composite.
+            // The midpoint-progress signal carries no amplification — it's
+            // already in [0, 1] from the projection clamp, and 0.0 means
+            // "definitely tap" while 0.5 means "definitely drag".
 
             double pathInflationExcess = Math.Clamp(
                 (pathInflation - 1.0) / (TouchScreenClassifierConfig.PathInflationCap - 1.0),
                 0.0, 1.0);
 
+            // For drag we scale midpoint-progress by 2× so the natural
+            // drag midpoint of 0.5 hits the top of the contribution
+            // range. Tap's natural midpoint is 0, so (1 - midpoint) hits
+            // 1.0 at the right value without scaling.
             double dragScore =
                 movingRatio * TouchScreenClassifierConfig.DragWeightMoving
                 + pathInflationExcess * TouchScreenClassifierConfig.DragWeightPathInflation
-                + (1.0 - stationaryRatio) * TouchScreenClassifierConfig.DragWeightNotStationary;
+                + (1.0 - stationaryRatio) * TouchScreenClassifierConfig.DragWeightNotStationary
+                + Math.Min(midpointProgress * 2.0, 1.0) * TouchScreenClassifierConfig.DragWeightMidpointProgress;
 
             var metricsOut = new Dictionary<string, double>
             {
@@ -180,6 +205,7 @@ namespace PerformanceServer.TouchScreen
                 [TouchScreenAnalysisResult.MetricNames.JumpingRatio] = jumpingRatio,
                 [TouchScreenAnalysisResult.MetricNames.PathInflation] = pathInflation,
                 [TouchScreenAnalysisResult.MetricNames.MaxStillnessFraction] = maxStillness,
+                [TouchScreenAnalysisResult.MetricNames.MidpointProgress] = midpointProgress,
                 [TouchScreenAnalysisResult.MetricNames.IntervalsAnalysed] = perIntervalMetrics.Count,
                 [TouchScreenAnalysisResult.MetricNames.TotalFramesAnalysed] = totalFrames,
                 [TouchScreenAnalysisResult.MetricNames.TapScore] = tapScore,
@@ -232,6 +258,8 @@ namespace PerformanceServer.TouchScreen
             double JumpingRatio,
             double PathInflation,
             double MaxStillnessFraction,
+            double MidpointProgress,
+            bool MidpointProgressValid,
             int FrameCount);
 
         private static IntervalMetrics analyseInterval(
@@ -240,6 +268,7 @@ namespace PerformanceServer.TouchScreen
             Vector2 nextHitStartPosition)
         {
             int stationary = 0, moving = 0, jumping = 0;
+            int validMotionSamples = 0;
             double pathLength = 0.0;
 
             int currentStill = 0, longestStill = 0;
@@ -252,6 +281,8 @@ namespace PerformanceServer.TouchScreen
                 double dt = curr.Time - prev.Time;
                 if (dt <= 0)
                     continue; // duplicate or out-of-order frame — skip
+
+                validMotionSamples++;
 
                 double dx = curr.Position.X - prev.Position.X;
                 double dy = curr.Position.Y - prev.Position.Y;
@@ -277,7 +308,12 @@ namespace PerformanceServer.TouchScreen
                 }
             }
 
-            int delta = Math.Max(1, intervalFrames.Count - 1); // number of motion samples
+            // Use the count of frames that actually contributed a velocity
+            // sample (skips duplicates / out-of-order). Falls back to 1 to
+            // avoid division by zero on the pathological case where every
+            // pair was filtered out — that case can't pass MinFramesPerInterval
+            // anyway, so this branch only matters for crash safety.
+            int delta = Math.Max(1, validMotionSamples);
             double euclidean = (nextHitStartPosition - prevHitEndPosition).Length;
 
             // Guard against zero baselines: if the two hit objects are at
@@ -286,12 +322,54 @@ namespace PerformanceServer.TouchScreen
             // it's a stack-repeat anyway and uninformative.
             double inflation = euclidean < 1.0 ? 1.0 : pathLength / euclidean;
 
+            // Midpoint progress: where along the prev→next path is the
+            // cursor at the temporal midpoint of the interval? Tap players
+            // sit at progress ≈ 0 (held at prev) until the very end. Drag
+            // players sit at progress ≈ 0.5 (mid-path). This signal is
+            // independent of frame rate and absolute velocity, which the
+            // velocity-bucket signals are NOT — at very high replay poll
+            // rates the per-frame motion drops below the stationary
+            // threshold even for genuine drag play, and only this
+            // position-based signal preserves the discrimination.
+            double midpointProgress = 0.5;
+            bool midpointValid = false;
+            if (intervalFrames.Count >= 2 && euclidean >= 1.0)
+            {
+                double midTime = 0.5 * (intervalFrames[0].Time + intervalFrames[^1].Time);
+                OsuReplayFrame? closest = null;
+                double closestGap = double.MaxValue;
+                foreach (var f in intervalFrames)
+                {
+                    double gap = Math.Abs(f.Time - midTime);
+                    if (gap < closestGap)
+                    {
+                        closestGap = gap;
+                        closest = f;
+                    }
+                }
+                if (closest != null)
+                {
+                    Vector2 fromStart = closest.Position - prevHitEndPosition;
+                    Vector2 pathVec = nextHitStartPosition - prevHitEndPosition;
+                    // Project fromStart onto pathVec, then normalise by
+                    // path length squared to get a fraction in [0, 1] for
+                    // points strictly on the path (clamped for off-path
+                    // samples, which a drag with curvature can produce).
+                    double dot = (double)fromStart.X * pathVec.X + (double)fromStart.Y * pathVec.Y;
+                    double progress = dot / (euclidean * euclidean);
+                    midpointProgress = Math.Clamp(progress, 0.0, 1.0);
+                    midpointValid = true;
+                }
+            }
+
             return new IntervalMetrics(
                 StationaryRatio: (double)stationary / delta,
                 MovingRatio: (double)moving / delta,
                 JumpingRatio: (double)jumping / delta,
                 PathInflation: inflation,
                 MaxStillnessFraction: (double)longestStill / delta,
+                MidpointProgress: midpointProgress,
+                MidpointProgressValid: midpointValid,
                 FrameCount: intervalFrames.Count);
         }
 

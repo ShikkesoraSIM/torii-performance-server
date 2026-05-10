@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!-- The in-process TestRunner.Main lets this assembly be run directly
+         (`dotnet run`) in addition to the standard `dotnet test` flow.
+         StartupObject pins the entry point since the referenced
+         PerformanceServer project also exposes a Main. -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PerformanceServer.Tests</RootNamespace>
+    <StartupObject>PerformanceServer.Tests.TestRunner</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- NUnit 4.x to satisfy the transitive constraint from ppy.osu.Game
+         2026.317+ (it pins NUnit ≥ 4.5.1 via its test-scene-builder
+         dependency tree). Downgrading the chain isn't an option without
+         pinning the whole osu.Game package family backward. -->
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="NUnit" Version="4.5.1" />
+    <PackageReference Include="NUnit.Analyzers" Version="4.10.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="NUnit.Framework" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PerformanceServer\PerformanceServer.csproj" />
+  </ItemGroup>
+
+</Project>
