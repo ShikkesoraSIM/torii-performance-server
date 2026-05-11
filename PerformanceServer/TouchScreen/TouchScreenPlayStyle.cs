@@ -10,35 +10,44 @@ namespace PerformanceServer.TouchScreen
     /// <remarks>
     /// The osu! client auto-applies the <c>TD</c> mod (TouchDevice) whenever
     /// the input device is recognised as a touchscreen. The mod carries a flat
-    /// pp penalty under the assumption that touchscreen play is universally
-    /// easier on aim. That assumption is wrong in two opposite ways:
+    /// pp penalty under the assumption that touchscreen play is easier on
+    /// aim — specifically because multiple fingers can be placed at multiple
+    /// hit positions simultaneously, making jumps trivial. That assumption
+    /// is correct for most TD play but misses one case:
     ///
     /// <list type="bullet">
     ///   <item>
     ///     <description>
-    ///     <b>Fair touch</b> (this enum's <see cref="Tap"/>): the player taps
-    ///     each hit object discretely with a finger or stylus, lifting between
-    ///     hits. The cursor is either held at the previous hit position (no
-    ///     contact = no movement on most platforms) or jumps to the next hit
-    ///     in a single frame at contact time. Aim difficulty is comparable to
-    ///     mouse/tablet — the penalty is unjustified and should be removed
-    ///     (this is the "FairTouchScreen" outcome).
+    ///     <b>Tap</b> (cursor teleports between hits in the replay): could
+    ///     be single-finger tap, multi-finger tap, or anything in between.
+    ///     The replay can't tell them apart — the cursor reflects whichever
+    ///     finger touched last, and a multi-finger player's replay looks
+    ///     identical to a single-finger player who taps each hit. Since we
+    ///     can't rule out multi-finger aim, the penalty assumption holds
+    ///     and TD remains in place.
     ///     </description>
     ///   </item>
     ///   <item>
     ///     <description>
-    ///     <b>Drag-tap cheese</b> (this enum's <see cref="Drag"/>): the player
-    ///     uses one continuous contact to drag the cursor across the screen
-    ///     while a second contact handles timing taps. Aim difficulty
-    ///     effectively collapses to "stay on the curve" — much easier than
-    ///     mouse/tablet. The TD penalty is justified, possibly even too small.
+    ///     <b>Drag</b> (cursor moves continuously through hits in the
+    ///     replay): this is physical evidence of single-finger aim. The
+    ///     primary touch must have stayed in contact the entire interval;
+    ///     a multi-finger player cannot produce a continuously-moving
+    ///     cursor because the cursor only follows ONE touch at a time
+    ///     (osu! filters secondary-touch positions from the cursor trace
+    ///     — additional fingers register button events but don't move the
+    ///     cursor). So a continuous cursor proves single-finger aim, and
+    ///     the multi-finger-easier-aim premise of the TD penalty doesn't
+    ///     apply. This is the FairTouchScreen outcome.
     ///     </description>
     ///   </item>
     /// </list>
     ///
-    /// Distinguishing them is the whole point of this classifier. The output
-    /// drives whether the TD mod is honoured (Drag) or silently stripped
-    /// before pp calculation (Tap).
+    /// The classifier emits one of <see cref="Tap"/> / <see cref="Drag"/> /
+    /// <see cref="Mixed"/> / <see cref="Unknown"/>. The downstream pp
+    /// pipeline (<c>PerformanceController.cs</c>) strips the TD mod from
+    /// the calculator's input iff the verdict is <see cref="Drag"/>.
+    /// Anything else keeps the penalty.
     /// </remarks>
     public enum TouchScreenPlayStyle
     {
@@ -48,28 +57,31 @@ namespace PerformanceServer.TouchScreen
         /// metrics straddled the decision boundary in a way the heuristic
         /// is unwilling to commit on. Callers should treat this as the
         /// conservative TD-default (full pp penalty applied) to avoid
-        /// false-positive Tap classifications giving free pp.
+        /// false-positive Drag classifications giving free pp.
         /// </summary>
         Unknown = 0,
 
         /// <summary>
-        /// Discrete-tap play — cursor mostly stationary between hits, with
-        /// one-frame jumps at hit times. The TD pp penalty should be lifted
-        /// for this score.
+        /// Cursor teleports between hits — could be multi-finger aim or
+        /// single-finger tap. The replay can't tell them apart, so we
+        /// conservatively keep the TD pp penalty applied. (Multi-finger
+        /// aim is the case the penalty was designed to address.)
         /// </summary>
         Tap = 1,
 
         /// <summary>
-        /// Continuous-drag play — cursor in sustained motion between hits.
-        /// The TD pp penalty should be applied (current default behaviour).
+        /// Cursor moves continuously through hits — physical proof of
+        /// single-finger aim, since secondary touches don't move the
+        /// cursor in osu!. This is the FairTouchScreen verdict — pp
+        /// recalc strips the TD mod from the calculator's input.
         /// </summary>
         Drag = 2,
 
         /// <summary>
         /// Replay shows characteristics of both styles to roughly equal
-        /// degree. Either the player legitimately switched techniques mid-
-        /// play (uncommon) or the heuristic's signals are noisy on this
-        /// beatmap. Treated as Drag (conservative) by the pp pipeline.
+        /// degree, OR the composite landed on Drag but one of the hard
+        /// gates failed. Treated as Tap downstream — TD penalty applies.
+        /// The conservative shelf.
         /// </summary>
         Mixed = 3,
     }

@@ -88,7 +88,15 @@ namespace PerformanceServer.TouchScreen
         /// composite 0..1 scale) to win the verdict outright. Below this,
         /// fall back to <see cref="TouchScreenPlayStyle.Mixed"/>.
         /// </summary>
-        public const double VerdictAbsoluteFloor = 0.55;
+        /// <remarks>
+        /// Bumped from 0.55 → 0.65 once the pp-bypass policy changed to
+        /// "Drag wins → strip TD". A Drag verdict now directly removes
+        /// the touchscreen pp penalty, so the cost of a false-positive
+        /// Drag verdict went from "wrong label" to "unjustified pp
+        /// boost". The higher floor demands a stronger signal before
+        /// accepting that cost.
+        /// </remarks>
+        public const double VerdictAbsoluteFloor = 0.65;
 
         /// <summary>
         /// And it must beat the opposing score by at least this margin —
@@ -96,6 +104,55 @@ namespace PerformanceServer.TouchScreen
         /// roughly equal (e.g. 0.62 vs 0.58).
         /// </summary>
         public const double VerdictMarginRequired = 0.20;
+
+        // ───── Drag-verdict hard gates ─────
+        //
+        // Once the composite scores have decided "Drag", these gates are
+        // checked separately and a Drag verdict is demoted to Mixed if
+        // ANY of them fails. They exist because the composite scores
+        // are weighted averages — a high composite score can be reached
+        // through unusual signal combinations that don't actually look
+        // like the textbook drag pattern. Each gate enforces a single
+        // physical requirement that a real single-finger drag play must
+        // satisfy. Demoting to Mixed (rather than Drag → FairTouchScreen)
+        // is the conservative direction: false negatives keep the TD
+        // penalty applied; only false positives give away free pp.
+
+        /// <summary>
+        /// Median <c>moving_ratio</c> across analysed intervals must be at
+        /// least this high before Drag is honoured. Below this, even if
+        /// the composite drag_score wins, demote to Mixed — the cursor
+        /// didn't spend enough time in continuous motion to be confident
+        /// it's a single-finger drag.
+        /// </summary>
+        public const double DragGateMinMovingRatio = 0.50;
+
+        /// <summary>
+        /// Median <c>midpoint_progress</c> must be at least this high. A
+        /// real drag has the cursor mid-path at midpoint (≈ 0.5); a
+        /// value below 0.35 means the cursor was still near the previous
+        /// hit at the midpoint, which is tap-like, not drag-like.
+        /// </summary>
+        public const double DragGateMinMidpointProgress = 0.35;
+
+        /// <summary>
+        /// Median <c>stationary_ratio</c> must be at most this high. A
+        /// real drag never holds still for long; if a third of the
+        /// frames are stationary, the cursor isn't really being dragged
+        /// continuously.
+        /// </summary>
+        public const double DragGateMaxStationaryRatio = 0.35;
+
+        /// <summary>
+        /// Minimum count of intervals whose <c>midpoint_progress</c>
+        /// signal was meaningful (euclidean prev → next hit distance
+        /// ≥ 1 px). Below this the position-based signal — the strongest
+        /// drag indicator we have — is being computed off a tiny sample
+        /// and shouldn't be trusted to grant FairTouchScreen. Demote to
+        /// Mixed instead. (Doesn't override the Unknown verdict; that
+        /// gates on total interval count separately.)
+        /// </summary>
+        public const int DragGateMinValidMidpointIntervals = 5;
 
         // ───── composite weights ─────
         //

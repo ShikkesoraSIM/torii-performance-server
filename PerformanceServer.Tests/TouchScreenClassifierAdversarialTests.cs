@@ -386,6 +386,78 @@ namespace PerformanceServer.Tests
                 $"(intervals={result.Metrics.GetValueOrDefault("intervals_analysed", 0)}).");
         }
 
+        // ───── hard-gate behaviour (Drag-verdict guard) ─────
+
+        [Test]
+        public void DragVerdict_OnlyGrantedWhenAllHardGatesPass()
+        {
+            // Pure drag pattern: every gate should pass with daylight.
+            var bm = BuildBeatmap(Enumerable.Range(0, 30)
+                                            .Select(i => (
+                                                time: 1000.0 + i * 300,
+                                                pos: new Vector2(50 + i * 20, 192))));
+            var frames = BuildDragFrames(bm);
+            var result = TouchScreenClassifier.Classify(frames, bm);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(result.Style, Is.EqualTo(TouchScreenPlayStyle.Drag),
+                    $"Pure drag should clear hard gates. Got {result.Style}.");
+                Assert.That(result.Metrics["moving_ratio"], Is.GreaterThan(0.5),
+                    "moving_ratio gate (>= 0.50) must pass on pure drag.");
+                Assert.That(result.Metrics["midpoint_progress"], Is.GreaterThan(0.35),
+                    "midpoint_progress gate (>= 0.35) must pass on pure drag.");
+                Assert.That(result.Metrics["stationary_ratio"], Is.LessThan(0.35),
+                    "stationary_ratio gate (<= 0.35) must pass on pure drag.");
+                Assert.That(result.Confidence, Is.GreaterThanOrEqualTo(0.65f),
+                    "Confidence must clear the 0.65 absolute floor.");
+            });
+        }
+
+        [Test]
+        public void StackMapDrag_DoesNotProduceFalsePositiveDrag()
+        {
+            // Stacked notes — cursor doesn't need to move. A drag-style
+            // synthesis here produces near-zero motion. Per the new policy
+            // this MUST NOT be classified as Drag (would grant unjustified
+            // FairTouchScreen). Verdict should be Tap, Mixed, or Unknown —
+            // anything except Drag.
+            var bm = BuildBeatmap(Enumerable.Range(0, 30)
+                                            .Select(i => (
+                                                time: 1000.0 + i * 300,
+                                                pos: new Vector2(200, 200)))); // all stacked
+            var frames = BuildDragFrames(bm);
+            var result = TouchScreenClassifier.Classify(frames, bm);
+
+            Assert.That(result.Style, Is.Not.EqualTo(TouchScreenPlayStyle.Drag),
+                $"Stack map drag synthesis misread as Drag — would unjustly " +
+                $"grant FairTouchScreen. " +
+                $"midpoint_progress={result.Metrics.GetValueOrDefault("midpoint_progress", -1):F2} " +
+                $"valid_midpoint_intervals (implicit, must be >= 5)");
+        }
+
+        [Test]
+        public void MostlyStackedWithFewRealDrags_DragGateRejects()
+        {
+            // 25 stacked notes + 5 real spaced notes. The 5 real ones
+            // could produce drag-like signals but only 4 inter-hit
+            // intervals between them — below the DragGateMinValidMidpointIntervals
+            // threshold. Even if drag_score wins, the gate should demote
+            // to Mixed.
+            var circles = new List<(double time, Vector2 pos)>();
+            for (int i = 0; i < 25; i++)
+                circles.Add((1000.0 + i * 300, new Vector2(200, 200)));
+            for (int i = 0; i < 5; i++)
+                circles.Add((9000.0 + i * 300, new Vector2(50 + i * 30, 200))); // real spacing
+            var bm = BuildBeatmap(circles);
+            var frames = BuildDragFrames(bm);
+            var result = TouchScreenClassifier.Classify(frames, bm);
+
+            Assert.That(result.Style, Is.Not.EqualTo(TouchScreenPlayStyle.Drag),
+                $"Got {result.Style} on a map where only 4 intervals have " +
+                $"a meaningful midpoint signal — Drag should be gated out.");
+        }
+
         // ───── consistency across many runs ─────
 
         [Test]

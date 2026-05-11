@@ -36,13 +36,21 @@ namespace PerformanceServer
         /// <c>scores.td_play_style</c> column by g0v0-server.
         /// </summary>
         /// <remarks>
-        /// When this is <c>"tap"</c> AND the score carries a TD mod, the
+        /// When this is <c>"drag"</c> AND the score carries a TD mod, the
         /// controller silently strips the TD mod before invoking the pp
-        /// calculator. The effect is that genuine tap players get the same
-        /// pp they'd get on mouse/tablet — the FairTouchScreen outcome —
-        /// without needing a separate mod or a dedicated calculator
-        /// pathway. Any other value (drag / mixed / unknown / null) leaves
-        /// the mod list untouched and the TD penalty applies as before.
+        /// calculator. A drag verdict means the replay shows a continuously
+        /// moving cursor — physical evidence that aim was driven by a
+        /// single finger (osu! filters secondary-touch jumps from the
+        /// cursor trace, so a continuous cursor cannot be faked by a
+        /// multi-finger player). The TD pp penalty assumes multi-finger
+        /// aim, so removing it for single-finger drag plays restores the
+        /// correct pp — the FairTouchScreen outcome.
+        ///
+        /// Any other value (tap / mixed / unknown / null) leaves the mod
+        /// list untouched and the TD penalty applies as before. Tap is
+        /// kept-penalty deliberately: a teleporting cursor in the replay
+        /// could be multi-finger aim (each finger pre-positioning), so we
+        /// conservatively assume the worst.
         ///
         /// The bypass is implemented here rather than inside the ruleset's
         /// pp calculator so the decision stays server-side and out of the
@@ -83,20 +91,36 @@ namespace PerformanceServer
             }
 
             // FairTouchScreen bypass: a TD-tagged score whose replay was
-            // classified as discrete-tap play gets the TD penalty removed.
-            // The mechanism is intentionally surgical — we strip the mod
-            // from the calculator's input rather than touching the
-            // ruleset's pp formulae, so the decision stays server-side and
-            // requires zero client changes.
+            // classified as continuous-cursor drag play gets the TD
+            // penalty removed. The mechanism is intentionally surgical —
+            // we strip the mod from the calculator's input rather than
+            // touching the ruleset's pp formulae, so the decision stays
+            // server-side and requires zero client changes.
             //
-            // The classifier itself runs separately (POST /touchscreen/
-            // classify) and the verdict is persisted by g0v0-server in
+            // Why Drag (not Tap) is the FairTouchScreen marker:
+            //   The TD pp penalty assumes touchscreen play uses multiple
+            //   fingers for aim — multi-finger aim makes jumps trivially
+            //   easy compared to mouse/tablet. A teleporting cursor in
+            //   the replay COULD be multi-finger aim (each finger
+            //   pre-positioning on a hit), so we conservatively assume it
+            //   is and keep the penalty.
+            //   A continuously-moving cursor, on the other hand, is
+            //   PHYSICAL EVIDENCE of single-finger aim: a single finger
+            //   maintained primary contact throughout. osu! filters
+            //   secondary touches (e.g. side-tap timing fingers) from
+            //   the cursor trace entirely — they register button events
+            //   but do not move the cursor. So a continuous cursor in
+            //   the replay = single-finger aim, regardless of whether
+            //   the player taps with additional fingers for timing.
+            //
+            // The classifier runs separately (POST /touchscreen/classify)
+            // and the verdict is persisted by g0v0-server in
             // scores.td_play_style. The pp recalc passes that column
             // through to us here as the td_play_style field.
             //
-            // Conservative on every other value: drag / mixed / unknown /
+            // Conservative on every other value: tap / mixed / unknown /
             // null all keep the TD mod and the existing penalty.
-            if (string.Equals(body.TdPlayStyle, "tap", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(body.TdPlayStyle, "drag", StringComparison.OrdinalIgnoreCase))
                 mods.RemoveAll(m => m is ModTouchDevice);
 
             ScoreInfo scoreInfo = new()

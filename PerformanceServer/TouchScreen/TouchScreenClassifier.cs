@@ -13,35 +13,39 @@ using osuTK;
 namespace PerformanceServer.TouchScreen
 {
     /// <summary>
-    /// Decides whether a TD-tagged osu! replay is genuine tap play
-    /// (FairTouchScreen — no pp penalty) or drag-tap cheese
-    /// (regular TouchScreen — pp penalty applies).
+    /// Decides whether a TD-tagged osu! replay's cursor trace shows
+    /// continuous motion (Drag verdict — single-finger aim proven,
+    /// FairTouchScreen no-penalty outcome) or teleportation between hits
+    /// (Tap verdict — could be multi-finger aim, regular TouchScreen pp
+    /// penalty applies).
     /// </summary>
     /// <remarks>
     /// <para>
     /// The classifier is intentionally heuristic, not ML. The signals we use
-    /// are physically grounded — they fall out of how a touchscreen reports
-    /// cursor position on a lift event, not out of a black-box pattern. The
-    /// thresholds in <see cref="TouchScreenClassifierConfig"/> are the
-    /// tunable knobs; everything else here is structural.
+    /// are physically grounded — they fall out of how osu!'s touch-input
+    /// layer reports cursor positions for single-touch vs multi-touch
+    /// scenarios. The thresholds in <see cref="TouchScreenClassifierConfig"/>
+    /// are the tunable knobs; everything else here is structural.
     /// </para>
     ///
     /// <para>
-    /// <b>Why these signals work.</b> On every osu!-supported platform the
-    /// touch-input layer treats a touch release as "cursor stays at last
-    /// reported position until a new touch begins". A tap player's
-    /// behaviour is therefore:
+    /// <b>Why these signals work.</b> osu!'s input layer records cursor
+    /// position from the <i>primary</i> touch only. Secondary touches
+    /// (e.g. a side-tap finger used purely for timing) fire button-press
+    /// events but do NOT move the cursor. So whatever the cursor trace
+    /// shows, it shows what ONE finger was doing for aim.
     /// </para>
     /// <list type="number">
-    ///   <item><description>Tap hit object A → cursor reported at A's position.</description></item>
-    ///   <item><description>Lift finger → cursor frozen at A's position. (No frames of motion.)</description></item>
-    ///   <item><description>Tap hit object B → cursor reported at B's position. (One frame of huge motion.)</description></item>
+    ///   <item><description>A teleporting cursor in the replay means the primary touch lifted and a new touch (re)started at the next hit's position. That's compatible with: single-finger tap (lift / replant), or multi-finger tap (different finger touches each note). The replay can't tell them apart — both produce identical teleport patterns.</description></item>
+    ///   <item><description>A continuously moving cursor in the replay means the primary touch stayed in contact the entire interval, with its position progressing through the path between hits. That is NOT compatible with multi-finger aim — a different finger touching would have moved the cursor (it would become the new primary) and the trace would discontinue. So a continuous cursor is hard evidence of single-finger aim.</description></item>
     /// </list>
+    ///
     /// <para>
-    /// A drag-tap player's behaviour is the opposite — the dragging finger
-    /// never lifts, so frames between hits show a continuous stream of small
-    /// movements. The reverse-engineerable difference is the cursor's
-    /// stationary-frame ratio, and the symmetric jump-frame ratio.
+    /// Since the TD pp penalty exists to offset the multi-finger-aim
+    /// advantage, the verdict drives pp directly: <see cref="TouchScreenPlayStyle.Drag"/>
+    /// removes the penalty (the multi-finger premise doesn't apply);
+    /// every other verdict keeps it (conservative default — we don't
+    /// hand out free pp when we can't rule out multi-finger aim).
     /// </para>
     ///
     /// <para>
@@ -224,15 +228,40 @@ namespace PerformanceServer.TouchScreen
             else if (dragScore >= TouchScreenClassifierConfig.VerdictAbsoluteFloor &&
                      dragScore - tapScore >= TouchScreenClassifierConfig.VerdictMarginRequired)
             {
-                style = TouchScreenPlayStyle.Drag;
-                baseConfidence = (float)Math.Min(1.0, dragScore);
+                // Composite says Drag. Run the hard gates before honouring
+                // it — each gate enforces a single physical property a
+                // real single-finger drag must satisfy. Failing any one
+                // demotes to Mixed, which keeps the TD penalty applied
+                // downstream. This is the conservative direction: false
+                // negatives (real drag classified as Mixed) just cost a
+                // player their FairTouchScreen pp; false positives (other
+                // play styles classified as Drag) hand out unjustified pp
+                // boosts, which is much worse for the system.
+                bool dragGatePass =
+                    movingRatio >= TouchScreenClassifierConfig.DragGateMinMovingRatio
+                    && midpointProgress >= TouchScreenClassifierConfig.DragGateMinMidpointProgress
+                    && stationaryRatio <= TouchScreenClassifierConfig.DragGateMaxStationaryRatio
+                    && validMidpointIntervals.Count >= TouchScreenClassifierConfig.DragGateMinValidMidpointIntervals;
+
+                if (dragGatePass)
+                {
+                    style = TouchScreenPlayStyle.Drag;
+                    baseConfidence = (float)Math.Min(1.0, dragScore);
+                }
+                else
+                {
+                    // Demote — the composite landed on Drag but the raw
+                    // signals don't fully agree. Mixed is the right shelf.
+                    style = TouchScreenPlayStyle.Mixed;
+                    baseConfidence = (float)Math.Min(0.6, dragScore);
+                }
             }
             else
             {
                 // Neither side won outright. Could be (a) a genuinely mixed
                 // play or (b) the heuristic can't tell. We return Mixed with
-                // capped confidence so the pp pipeline treats it as Drag
-                // (conservative).
+                // capped confidence so the pp pipeline treats it as Tap
+                // (= keep TD penalty), the conservative outcome.
                 style = TouchScreenPlayStyle.Mixed;
                 baseConfidence = (float)Math.Max(tapScore, dragScore);
             }

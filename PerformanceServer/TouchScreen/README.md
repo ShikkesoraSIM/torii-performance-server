@@ -1,9 +1,11 @@
 # TouchScreen play-style classifier
 
 Server-side replay heuristic that decides whether a TD-tagged osu!
-replay is **discrete-tap** play (stylus / finger, lifting between hits)
-or **drag-tap** play (one finger drags, the other side-taps for
-timing). Output drives whether the TD pp penalty applies on recalc.
+replay's cursor trace shows **teleport** between hits (could be multi-
+finger aim) or **continuous motion** through hits (proof of single-
+finger aim). Output drives whether the TD pp penalty applies on
+recalc — continuous-motion plays get the FairTouchScreen outcome,
+teleport plays keep the penalty.
 
 ## TL;DR
 
@@ -36,11 +38,33 @@ POST /touchscreen/classify
 }
 ```
 
-When `style == "tap"`, the **caller** (g0v0-server) persists that on
-the score row (`scores.td_play_style = 1`) and the pp recalc pipeline
+When `style == "drag"`, the **caller** (g0v0-server) persists that on
+the score row (`scores.td_play_style = 2`) and the pp recalc pipeline
 strips the TD mod before invoking the pp formulae — the
-"FairTouchScreen" outcome. No client code is touched anywhere in the
-chain.
+"FairTouchScreen" outcome. Tap / Mixed / Unknown verdicts all keep
+the TD mod applied. No client code is touched anywhere in the chain.
+
+## Why Drag (and not Tap) is FairTouchScreen
+
+The TD pp penalty exists because touch input lets the player use
+**multiple fingers for aim** — multi-finger aim makes jumps trivially
+easy compared to a mouse / tablet, where one cursor must travel to
+each note.
+
+In the replay's cursor trace:
+- A teleporting cursor (`Tap` verdict) is **compatible with** multi-finger
+  aim — each finger pre-positions on a different note, and the
+  recorded cursor just reflects whichever touched last. We can't
+  distinguish single-finger tap from multi-finger tap, so we
+  conservatively assume the worst (multi-finger) and keep the penalty.
+- A continuously moving cursor (`Drag` verdict) is **proof of
+  single-finger aim**. osu!'s input layer filters secondary-touch
+  positions from the cursor trace — they fire button events but never
+  move the cursor — so a continuous cursor cannot be produced by
+  multi-finger aim. One finger maintained primary contact, dragging
+  through every hit position. The multi-finger-aim premise of the TD
+  penalty doesn't apply, and the score deserves the same pp as the
+  same play would get on tablet / mouse.
 
 ## Why this lives only in the perf server
 
